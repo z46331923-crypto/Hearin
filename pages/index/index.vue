@@ -1,52 +1,59 @@
 <template>
-	<view class="content">
-		<image class="logo" src="/static/logo.png"></image>
-		<view class="text-area">
-			<text class="title">{{title}}</text>
-		</view>
-	</view>
+  <view class="page">
+    <button @click="selectVideos">导入视频</button>
+
+    <view v-if="tracks.length === 0" class="empty">
+      暂无视频
+    </view>
+
+    <view
+      v-for="track in tracks"
+      :key="track.id"
+      class="track-item"
+    >
+      {{ track.title }}
+    </view>
+  </view>
 </template>
 
-<script>
-	export default {
-		data() {
-			return {
-				title: 'Hello'
-			}
-		},
-		onLoad() {
+<script setup>
+import { ref } from 'vue'
 
-		},
-		methods: {
+const tracks = ref([])
 
-		}
-	}
+const selectVideos = () => {
+  const input = document.createElement('input')
+
+  input.type = 'file'
+  input.accept = 'video/*'
+  input.multiple = true
+
+  input.onchange = (event) => {
+    const files = Array.from(event.target.files)
+
+    files.forEach((file) => {
+      tracks.value.push({
+        id: crypto.randomUUID(),
+        title: file.name,
+        file: file
+      })
+    })
+  }
+
+  input.click()
+}
 </script>
 
 <style>
-	.content {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-	}
+.page {
+  padding: 20px;
+}
 
-	.logo {
-		height: 200rpx;
-		width: 200rpx;
-		margin-top: 200rpx;
-		margin-left: auto;
-		margin-right: auto;
-		margin-bottom: 50rpx;
-	}
+.empty {
+  margin-top: 20px;
+}
 
-	.text-area {
-		display: flex;
-		justify-content: center;
-	}
-
-	.title {
-		font-size: 36rpx;
-		color: #8f8f94;
-	}
+.track-item {
+  margin-top: 12px;
+}
 </style>
