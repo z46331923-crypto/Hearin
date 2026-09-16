@@ -10,9 +10,11 @@
       v-for="track in tracks"
       :key="track.id"
       class="track-item"
+      @click="openPlayer(track)"
     >
       {{ track.title }}
     </view>
+
   </view>
 </template>
 
@@ -20,6 +22,18 @@
 import { ref } from 'vue'
 
 const tracks = ref([])
+// 通过页面通信传递 Track，File 不放进 URL 参数中。
+const openPlayer = (track) => {
+  uni.navigateTo({
+    url: '/pages/player/player',
+    success: ({ eventChannel }) => {
+      eventChannel.emit('openTrack', track)
+    },
+    fail: (error) => {
+      console.error('无法打开播放器页面：', error)
+    }
+  })
+}
 
 const selectVideos = () => {
   const input = document.createElement('input')
