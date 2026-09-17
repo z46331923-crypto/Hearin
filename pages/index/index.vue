@@ -7,10 +7,10 @@
     </view>
 
     <view
-      v-for="track in tracks"
+      v-for="(track, index) in tracks"
       :key="track.id"
       class="track-item"
-      @click="openPlayer(track)"
+      @click="openPlayer(index)"
     >
       {{ track.title }}
     </view>
@@ -22,12 +22,13 @@
 import { ref } from 'vue'
 
 const tracks = ref([])
-// 通过页面通信传递 Track，File 不放进 URL 参数中。
-const openPlayer = (track) => {
+// 复制当前列表作为本次播放队列，File 仍通过页面通信传递。
+const openPlayer = (index) => {
+  const queue = tracks.value.slice()
   uni.navigateTo({
     url: '/pages/player/player',
     success: ({ eventChannel }) => {
-      eventChannel.emit('openTrack', track)
+      eventChannel.emit('openQueue', { tracks: queue, currentIndex: index })
     },
     fail: (error) => {
       console.error('无法打开播放器页面：', error)
