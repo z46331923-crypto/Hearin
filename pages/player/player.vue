@@ -22,7 +22,21 @@
         <text>{{ formatTime(duration) }}</text>
       </view>
       <view class="playback-buttons">
-      <button class="skip-button" :disabled="currentIndex <= 0" aria-label="上一首" @click="previousTrack">
+      <button class="skip-button" :title="modeLabel" :aria-label="`当前模式：${modeLabel}，点击切换`" @click="cycleMode">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <g v-if="playMode === 'sequence'">
+            <path d="M4 5h10M4 12h10M4 19h6M19 5v14m-3-3 3 3 3-3" />
+          </g>
+          <g v-else-if="playMode === 'random'">
+            <path d="M3 5h3c4 0 8 14 12 14h3m-3-3 3 3-3 3M3 19h3c1.5 0 3-2 4.5-4.5M14 9c1.5-2.5 2.5-4 4-4h3m-3-3 3 3-3 3" />
+          </g>
+          <g v-else>
+            <path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3" />
+            <path v-if="playMode === 'single'" d="m10 11 2-1v5m-2 0h4" />
+          </g>
+        </svg>
+      </button>
+      <button class="skip-button" :disabled="!canPrevious" aria-label="上一首" @click="previousTrack">
         <view class="skip-icon previous-icon" aria-hidden="true">
           <view class="skip-triangle"></view>
           <view class="skip-bar"></view>
@@ -40,7 +54,7 @@
         </view>
         <view v-else class="play-icon" aria-hidden="true"></view>
       </button>
-      <button class="skip-button" :disabled="currentIndex < 0 || currentIndex >= tracks.length - 1" aria-label="下一首" @click="nextTrack">
+      <button class="skip-button" :disabled="!canNext" aria-label="下一首" @click="nextTrack">
         <view class="skip-icon" aria-hidden="true">
           <view class="skip-triangle"></view>
           <view class="skip-bar"></view>
@@ -59,6 +73,17 @@ const tracks = ref([])
 const currentIndex = ref(-1)
 // 当前 Track 由队列和索引推导，不再单独赋值。
 const currentTrack = computed(() => tracks.value[currentIndex.value] ?? null)
+const modes = ['sequence', 'single', 'list', 'random']
+const modeLabels = { sequence: '顺序播放', single: '单曲循环', list: '列表循环', random: '随机播放' }
+const playMode = ref('sequence')
+const modeLabel = computed(() => modeLabels[playMode.value])
+const wrapsQueue = computed(() => playMode.value === 'list' || playMode.value === 'random')
+const canPrevious = computed(() => !!currentTrack.value && (wrapsQueue.value || currentIndex.value > 0))
+const canNext = computed(() => !!currentTrack.value && (wrapsQueue.value || currentIndex.value < tracks.value.length - 1))
+
+const cycleMode = () => {
+  playMode.value = modes[(modes.indexOf(playMode.value) + 1) % modes.length]
+}
 const isPlaying = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
@@ -113,7 +138,11 @@ const handleEnded = () => {
   // 忽略切歌后可能到达的旧结束事件。
   if (!audio.ended) return
   syncPlayingState()
-  nextTrack()
+  if (playMode.value === 'single') {
+    restartTrack()
+  } else {
+    nextTrack()
+  }
 }
 
 audio.addEventListener('ended', handleEnded)
@@ -167,15 +196,38 @@ const playAtIndex = (index) => {
   resumePlayback()
 }
 
-const previousTrack = () => {
-  if (currentIndex.value > 0) playAtIndex(currentIndex.value - 1)
+// 重播同一首时保留 Audio 和 Object URL，只把播放位置归零。
+const restartTrack = () => {
+  if (!currentTrack.value) return
+  audio.currentTime = 0
+  seekPreview.value = null
+  syncCurrentTime()
+  resumePlayback()
 }
 
-const nextTrack = () => {
-  if (currentIndex.value >= 0 && currentIndex.value < tracks.value.length - 1) {
-    playAtIndex(currentIndex.value + 1)
+const moveTrack = (direction) => {
+  if (!currentTrack.value) return
+  const count = tracks.value.length
+  let index = currentIndex.value + direction
+
+  if (playMode.value === 'random') {
+    // 从其余 Track 中随机选择，避免连续播放同一首；只有一首时重播。
+    index = currentIndex.value
+    if (count > 1) {
+      index = Math.floor(Math.random() * (count - 1))
+      if (index >= currentIndex.value) index += 1
+    }
+  } else if (playMode.value === 'list') {
+    index = (index + count) % count
   }
+
+  if (index < 0 || index >= count) return
+  if (index === currentIndex.value) restartTrack()
+  else playAtIndex(index)
 }
+
+const previousTrack = () => moveTrack(-1)
+const nextTrack = () => moveTrack(1)
 
 const openQueue = (data) => {
   clearMedia()
