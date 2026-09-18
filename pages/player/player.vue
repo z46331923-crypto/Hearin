@@ -60,6 +60,27 @@
           <view class="skip-bar"></view>
         </view>
       </button>
+      <view class="more-controls">
+        <view v-if="showMore" class="more-backdrop" @click="showMore = false"></view>
+        <view v-if="showMore" id="player-more-panel" class="more-panel">
+          <view class="speed-option">
+            <button class="speed-button" :aria-label="`倍速播放 ${speedLabel}，点击切换`" @click="cycleSpeed">
+              {{ speedLabel }}
+            </button>
+            <text class="speed-caption">倍速播放</text>
+          </view>
+        </view>
+        <button
+          class="more-button"
+          aria-label="更多播放功能"
+          :aria-expanded="showMore"
+          aria-controls="player-more-panel"
+          @click="showMore = !showMore"
+          @keydown.esc="showMore = false"
+        >
+          <view class="more-dots" aria-hidden="true"><view></view><view></view><view></view></view>
+        </button>
+      </view>
       </view>
     </view>
   </view>
@@ -90,6 +111,24 @@ const duration = ref(0)
 // 拖动期间只预览滑块位置，避免播放事件把滑块拉回去；松手才跳转。
 const seekPreview = ref(null)
 const audio = new Audio()
+const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const playbackRate = ref(1)
+const showMore = ref(false)
+const speedLabel = computed(() => `${Number.isInteger(playbackRate.value) ? playbackRate.value.toFixed(1) : playbackRate.value}x`)
+
+const syncPlaybackRate = () => {
+  playbackRate.value = audio.playbackRate
+}
+
+const cycleSpeed = () => {
+  const nextRate = playbackRates[(playbackRates.indexOf(audio.playbackRate) + 1) % playbackRates.length]
+  // 默认速度用于加载下一首，playbackRate 用于立即调整当前媒体。
+  audio.defaultPlaybackRate = nextRate
+  audio.playbackRate = nextRate
+  syncPlaybackRate()
+}
+
+audio.addEventListener('ratechange', syncPlaybackRate)
 let currentObjectUrl = ''
 let eventChannel
 const page = getCurrentInstance().proxy
@@ -261,6 +300,7 @@ onUnload(() => {
   audio.removeEventListener('durationchange', syncDuration)
   audio.removeEventListener('timeupdate', syncCurrentTime)
   audio.removeEventListener('seeked', syncCurrentTime)
+  audio.removeEventListener('ratechange', syncPlaybackRate)
 })
 </script>
 
@@ -301,11 +341,83 @@ onUnload(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: clamp(4px, 2vw, 12px);
 }
 
 .playback-buttons button {
   margin: 0;
+}
+
+.more-controls {
+  position: relative;
+  width: 48px;
+  flex-shrink: 0;
+}
+
+.more-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.more-panel {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  z-index: 11;
+  width: 160px;
+  padding: 20px 16px;
+  box-sizing: border-box;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.speed-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.speed-button {
+  width: 72px;
+  height: 48px;
+  line-height: 48px;
+  padding: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.speed-caption {
+  font-size: 12px;
+  color: #666;
+}
+
+.more-button {
+  position: relative;
+  z-index: 11;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.more-dots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.more-dots > view {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .skip-button {
