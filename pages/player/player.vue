@@ -89,6 +89,7 @@
 <script setup>
 import { ref, computed, getCurrentInstance, onMounted } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
+import { getMedia } from '../../services/trackStorage.js'
 
 const tracks = ref([])
 const currentIndex = ref(-1)
@@ -130,6 +131,7 @@ const cycleSpeed = () => {
 
 audio.addEventListener('ratechange', syncPlaybackRate)
 let currentObjectUrl = ''
+let mediaRequestId = 0
 let eventChannel
 const page = getCurrentInstance().proxy
 
@@ -191,6 +193,8 @@ audio.addEventListener('timeupdate', syncCurrentTime)
 audio.addEventListener('seeked', syncCurrentTime)
 
 const clearMedia = () => {
+  // 切歌和卸载都使之前未完成的数据库读取失效。
+  mediaRequestId += 1
   audio.pause()
   audio.removeAttribute('src')
   audio.load()
@@ -206,7 +210,7 @@ const clearMedia = () => {
 }
 
 const resumePlayback = async () => {
-  if (!currentTrack.value) return
+  if (!currentTrack.value || !currentObjectUrl) return
   const title = currentTrack.value.title
   const playingUrl = currentObjectUrl
   try {
@@ -219,16 +223,23 @@ const resumePlayback = async () => {
   }
 }
 
-const playAtIndex = (index) => {
+const playAtIndex = async (index) => {
   if (!Number.isInteger(index) || index < 0 || index >= tracks.value.length) return
   const track = tracks.value[index]
   clearMedia()
+  const requestId = mediaRequestId
+  // 先记录选中的索引，快速连续切歌仍能从最新选择继续。
+  currentIndex.value = index
   try {
-    currentObjectUrl = URL.createObjectURL(track.file)
+    const media = await getMedia(track.mediaId)
+    if (requestId !== mediaRequestId) return
+    currentObjectUrl = URL.createObjectURL(media.blob)
     audio.src = currentObjectUrl
-    currentIndex.value = index
   } catch (error) {
+    if (requestId !== mediaRequestId) return
     clearMedia()
+    currentIndex.value = index
+    // 保留选中项，允许用户继续切换到其他 Track。
     console.error(`无法加载 Track「${track.title}」：`, error)
     return
   }
@@ -238,6 +249,10 @@ const playAtIndex = (index) => {
 // 重播同一首时保留 Audio 和 Object URL，只把播放位置归零。
 const restartTrack = () => {
   if (!currentTrack.value) return
+  if (!currentObjectUrl) {
+    playAtIndex(currentIndex.value)
+    return
+  }
   audio.currentTime = 0
   seekPreview.value = null
   syncCurrentTime()
@@ -276,6 +291,10 @@ const openQueue = (data) => {
 
 const togglePlayback = () => {
   if (!currentTrack.value) return
+  if (!currentObjectUrl) {
+    playAtIndex(currentIndex.value)
+    return
+  }
   if (audio.paused || audio.ended) {
     resumePlayback()
   } else {
@@ -284,7 +303,7 @@ const togglePlayback = () => {
 }
 
 onMounted(() => {
-  // 接收队列和选中索引，File 仍是原来的本地文件对象。
+  // 页面通信只接收元数据，媒体由 playAtIndex 按需读取。
   eventChannel = page.getOpenerEventChannel()
   eventChannel.on('openQueue', openQueue)
 })
