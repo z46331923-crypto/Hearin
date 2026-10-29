@@ -11,6 +11,10 @@
 			"style": {
 				"navigationBarTitleText": "播放器"
 			}
+		},
+		{
+			"path": "pages/extract-test/extract-test",
+			"style": { "navigationBarTitleText": "音频提取 PoC" }
 		}
 	],
 	"globalStyle": {

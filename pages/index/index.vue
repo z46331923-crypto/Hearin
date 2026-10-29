@@ -1,6 +1,7 @@
 <template>
   <view class="page">
     <button @click="selectVideos">导入视频</button>
+    <button @click="openExtractTest">测试音频提取（PoC）</button>
 
     <view v-if="tracks.length === 0" class="empty">
       暂无视频
@@ -35,6 +36,12 @@ import { getTracks, saveTrack, deleteTrack, updateTrackTitle } from '../../servi
 import { readDuration } from '../../services/mediaMetadata.js'
 
 const tracks = ref([])
+const openExtractTest = () => {
+  uni.navigateTo({
+    url: '/pages/extract-test/extract-test',
+    fail: (error) => console.error('无法打开音频提取测试页：', error)
+  })
+}
 const pendingDeletes = new Set()
 const pendingRenames = new Set()
 

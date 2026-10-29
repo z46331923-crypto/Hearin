@@ -1,4 +1,5 @@
 node_modules/
+static/ffmpeg/
 unpackage/
 .hbuilderx/
 .DS_Store
