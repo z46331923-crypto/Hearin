@@ -18,6 +18,7 @@
 <script setup>
 import { ref } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
+import { extractAudio } from '../../services/audioExtraction.js'
 
 const busy = ref(false)
 const status = ref('请选择较小的视频先测试。原文件不会被修改。')
@@ -26,7 +27,7 @@ const result = ref(null)
 const errorMessage = ref('')
 const audio = new Audio()
 let outputUrl = ''
-let activeFFmpeg = null
+let extractionController = null
 let disposed = false
 let picker = null
 
@@ -62,65 +63,29 @@ const extract = async (file) => {
   errorMessage.value = ''
   fileName.value = file.name
   status.value = '正在加载 FFmpeg 引擎…'
-  let ffmpeg
-  let timer
-  const logs = []
-  const onLog = ({ message }) => {
-    logs.push(message)
-    if (logs.length > 20) logs.shift()
-    console.log('[FFmpeg PoC]', message)
-  }
+  extractionController = new AbortController()
   try {
-    // 本地同源 ESM 文件保留 Worker 相对路径；不经过 Vite 的依赖预打包。
-    const base = new URL('static/ffmpeg/', document.baseURI)
-    const moduleURL = new URL('wrapper/index.js', base).href
-    const { FFmpeg } = await import(/* @vite-ignore */ moduleURL)
-    if (disposed) return
-    ffmpeg = new FFmpeg()
-    activeFFmpeg = ffmpeg
-    ffmpeg.on('log', onLog)
-    timer = setTimeout(() => ffmpeg.terminate(), 60000)
-    await ffmpeg.load({
-      coreURL: new URL('core/ffmpeg-core.js', base).href,
-      wasmURL: new URL('core/ffmpeg-core.wasm', base).href
+    const extraction = await extractAudio(file, {
+      signal: extractionController.signal,
+      onLog: (message) => console.log('[FFmpeg PoC]', message),
+      onStatus: (phase) => {
+        if (phase === 'extracting') status.value = '正在复制音轨到 M4A…'
+      }
     })
-    clearTimeout(timer)
     if (disposed) return
-    status.value = '正在复制音轨到 M4A…'
-    const start = performance.now()
-    const data = new Uint8Array(await file.arrayBuffer())
-    if (disposed) return
-    await ffmpeg.writeFile('input', data)
-    const args = ['-i', 'input', '-map', '0:a:0', '-vn', '-c:a', 'copy', '-movflags', '+faststart', 'output.m4a']
-    const code = await ffmpeg.exec(args, 120000)
-    if (code !== 0) throw new Error(`FFmpeg 退出码 ${code}。视频可能没有音轨、音频编码不兼容 M4A，或处理超时；本测试不会自动转码。`)
-    const output = await ffmpeg.readFile('output.m4a')
-    if (disposed) return
-    if (!(output instanceof Uint8Array) || !output.byteLength) throw new Error('提取结果为空')
-    const blob = new Blob([output], { type: 'audio/mp4' })
-    outputUrl = URL.createObjectURL(blob)
+    outputUrl = URL.createObjectURL(extraction.blob)
     audio.src = outputUrl
-    result.value = { inputSize: file.size, outputSize: blob.size, seconds: (performance.now() - start) / 1000 }
+    result.value = extraction
     status.value = '提取成功，请点击播放验证声音。'
   } catch (error) {
-    if (!disposed) {
+    if (!disposed && error.name !== 'AbortError') {
       clearResult()
       status.value = '提取失败，原文件和正式曲库未修改。'
-      errorMessage.value = `${error.message || String(error)}\n${logs.slice(-8).join('\n')}`
-      console.error('[音频提取 PoC] 提取失败（请确认 npm install 已完成；引擎加载超过 60 秒会终止）', error, logs)
+      errorMessage.value = error.message || String(error)
+      console.error('[音频提取 PoC] 提取失败', error)
     }
   } finally {
-    clearTimeout(timer)
-    if (ffmpeg) {
-      if (!disposed && ffmpeg.loaded) {
-        for (const path of ['input', 'output.m4a']) {
-          try { await ffmpeg.deleteFile(path) } catch (error) { console.debug('[FFmpeg PoC] 临时文件不存在或已清理', path, error) }
-        }
-      }
-      ffmpeg.off('log', onLog)
-      ffmpeg.terminate()
-    }
-    activeFFmpeg = null
+    extractionController = null
     busy.value = false
   }
 }
@@ -144,7 +109,7 @@ onUnload(() => {
   disposed = true
   if (picker) picker.onchange = null
   picker = null
-  activeFFmpeg?.terminate()
+  extractionController?.abort()
   clearResult()
   audio.removeEventListener('error', handleAudioError)
 })

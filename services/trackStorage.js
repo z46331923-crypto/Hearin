@@ -27,7 +27,9 @@ export const openDatabase = () => {
   return databasePromise
 }
 
-export const saveTrack = async (track, blob) => {
+export const saveTrack = async (track, originalBlob, audioBlob = null) => {
+  if (audioBlob && !track.audioMediaId) throw new Error('保存失败：提取音频缺少 audioMediaId')
+  if (track.audioMediaId && !audioBlob) throw new Error('保存失败：audioMediaId 缺少对应音频')
   const db = await openDatabase()
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(['tracks', 'media'], 'readwrite')
@@ -35,7 +37,9 @@ export const saveTrack = async (track, blob) => {
     transaction.oncomplete = () => resolve()
     transaction.onabort = () => reject(transaction.error || new Error('保存媒体的事务已取消'))
     try {
-      transaction.objectStore('media').add({ id: track.mediaId, blob })
+      const mediaStore = transaction.objectStore('media')
+      mediaStore.add({ id: track.mediaId, blob: originalBlob })
+      if (audioBlob) mediaStore.add({ id: track.audioMediaId, blob: audioBlob })
       transaction.objectStore('tracks').add(track)
     } catch (error) {
       transaction.abort()
@@ -54,6 +58,7 @@ export const deleteTrack = async (track) => {
     try {
       transaction.objectStore('tracks').delete(track.id)
       transaction.objectStore('media').delete(track.mediaId)
+      if (track.audioMediaId) transaction.objectStore('media').delete(track.audioMediaId)
     } catch (error) {
       transaction.abort()
       reject(error)

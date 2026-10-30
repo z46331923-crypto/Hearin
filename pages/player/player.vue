@@ -231,7 +231,8 @@ const playAtIndex = async (index) => {
   // 先记录选中的索引，快速连续切歌仍能从最新选择继续。
   currentIndex.value = index
   try {
-    const media = await getMedia(track.mediaId)
+    // V0.2 Track 默认播放提取音频；旧 Track 或提取失败时继续播放原视频音轨。
+    const media = await getMedia(track.audioMediaId || track.mediaId)
     if (requestId !== mediaRequestId) return
     currentObjectUrl = URL.createObjectURL(media.blob)
     audio.src = currentObjectUrl

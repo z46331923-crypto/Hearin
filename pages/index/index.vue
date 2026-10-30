@@ -1,6 +1,6 @@
 <template>
   <view class="page">
-    <button @click="selectVideos">导入视频</button>
+    <button :disabled="isImporting" @click="selectVideos">导入视频</button>
 
     <view v-if="tracks.length === 0" class="empty">
       暂无视频
@@ -33,8 +33,10 @@ import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { getTracks, saveTrack, deleteTrack, updateTrackTitle } from '../../services/trackStorage.js'
 import { readDuration } from '../../services/mediaMetadata.js'
+import { extractAudio } from '../../services/audioExtraction.js'
 
 const tracks = ref([])
+const isImporting = ref(false)
 const pendingDeletes = new Set()
 const pendingRenames = new Set()
 
@@ -113,6 +115,7 @@ const openPlayer = (index) => {
 }
 
 const selectVideos = () => {
+  if (isImporting.value) return
   const input = document.createElement('input')
 
   input.type = 'file'
@@ -121,11 +124,29 @@ const selectVideos = () => {
 
   input.onchange = async (event) => {
     const files = Array.from(event.target.files || [])
-    // 避免启动恢复的结果覆盖刚导入的数据。
-    await restorePromise
-    for (const file of files) {
-      try {
-        const duration = await readDuration(file)
+    if (!files.length) return
+    isImporting.value = true
+    try {
+      // 避免启动恢复的结果覆盖刚导入的数据。
+      await restorePromise
+      // 同一批文件逐个提取，避免多个 FFmpeg Worker 同时占用大量内存。
+      for (const file of files) {
+        let duration
+        try {
+          duration = await readDuration(file)
+        } catch (error) {
+          console.error(`无法读取「${file.name}」的媒体信息，未导入：`, error)
+          continue
+        }
+
+        let audioBlob = null
+        try {
+          const extraction = await extractAudio(file)
+          audioBlob = extraction.blob
+        } catch (error) {
+          console.error(`「${file.name}」音频提取失败，将保存原视频：`, error)
+        }
+
         const track = {
           id: crypto.randomUUID(),
           title: file.name,
@@ -133,13 +154,25 @@ const selectVideos = () => {
           mediaType: file.type,
           duration,
           createdAt: Date.now(),
-          mediaId: crypto.randomUUID()
+          mediaId: crypto.randomUUID(),
+          ...(audioBlob ? {
+            audioMediaId: crypto.randomUUID(),
+            audioMediaType: audioBlob.type
+          } : {})
         }
-        await saveTrack(track, file)
-        tracks.value.push(track)
-      } catch (error) {
-        console.error(`导入「${file.name}」失败，未加入列表：`, error)
+
+        try {
+          await saveTrack(track, file, audioBlob)
+          tracks.value.push(track)
+          if (!audioBlob) uni.showToast({ title: '音频提取失败，已保存原视频', icon: 'none' })
+        } catch (error) {
+          console.error(`保存「${file.name}」到本地数据库失败，未加入列表：`, error)
+          uni.showToast({ title: '本地保存失败，请重试', icon: 'none' })
+        }
       }
+    } finally {
+      isImporting.value = false
+      input.onchange = null
     }
   }
 
