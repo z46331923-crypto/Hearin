@@ -1,8 +1,28 @@
 <template>
   <view class="player-page">
-    <view class="track-title">
-      {{ currentTrack ? currentTrack.title : '请返回列表选择视频' }}
+    <view class="media-area">
+      <component
+        :is="'video'"
+        ref="mediaElementRef"
+        v-show="mediaMode === 'video'"
+        class="video-element"
+        playsinline
+        webkit-playsinline
+        preload="metadata"
+        :controls="false"
+      ></component>
+      <view v-show="mediaMode === 'audio'" class="track-title">
+        {{ currentTrack ? currentTrack.title : '请返回列表选择视频' }}
+      </view>
     </view>
+
+    <button
+      class="media-mode-button"
+      :disabled="!currentTrack || isSwitchingMedia"
+      @click="toggleMediaMode"
+    >
+      {{ mediaMode === 'audio' ? '查看视频' : '返回音频' }}
+    </button>
 
     <view class="player-controls">
       <view class="progress-row">
@@ -13,7 +33,7 @@
           :max="1000"
           :step="1"
           :value="seekPreview ?? (duration > 0 ? Math.round(currentTime / duration * 1000) : 0)"
-          :disabled="!currentTrack || duration <= 0"
+          :disabled="!currentTrack || isSwitchingMedia || duration <= 0"
           :block-size="16"
           aria-label="播放进度"
           @changing="previewSeek"
@@ -44,7 +64,7 @@
       </button>
       <button
         class="play-button"
-        :disabled="!currentTrack"
+        :disabled="!currentTrack || isSwitchingMedia"
         :aria-label="isPlaying ? '暂停' : '播放'"
         @click="togglePlayback"
       >
@@ -64,7 +84,7 @@
         <view v-if="showMore" class="more-backdrop" @click="showMore = false"></view>
         <view v-if="showMore" id="player-more-panel" class="more-panel">
           <view class="speed-option">
-            <button class="speed-button" :aria-label="`倍速播放 ${speedLabel}，点击切换`" @click="cycleSpeed">
+            <button class="speed-button" :disabled="isSwitchingMedia" :aria-label="`倍速播放 ${speedLabel}，点击切换`" @click="cycleSpeed">
               {{ speedLabel }}
             </button>
             <text class="speed-caption">倍速播放</text>
@@ -111,40 +131,53 @@ const currentTime = ref(0)
 const duration = ref(0)
 // 拖动期间只预览滑块位置，避免播放事件把滑块拉回去；松手才跳转。
 const seekPreview = ref(null)
-const audio = new Audio()
+const mediaElementRef = ref(null)
+const mediaMode = ref('audio')
+const isSwitchingMedia = ref(false)
+let mediaElement = null
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const playbackRate = ref(1)
 const showMore = ref(false)
 const speedLabel = computed(() => `${Number.isInteger(playbackRate.value) ? playbackRate.value.toFixed(1) : playbackRate.value}x`)
 
 const syncPlaybackRate = () => {
-  playbackRate.value = audio.playbackRate
+  if (mediaElement) playbackRate.value = mediaElement.playbackRate
 }
 
 const cycleSpeed = () => {
-  const nextRate = playbackRates[(playbackRates.indexOf(audio.playbackRate) + 1) % playbackRates.length]
+  if (isSwitchingMedia.value) return
+  const currentRate = mediaElement?.playbackRate ?? playbackRate.value
+  const nextRate = playbackRates[(playbackRates.indexOf(currentRate) + 1) % playbackRates.length]
   // 默认速度用于加载下一首，playbackRate 用于立即调整当前媒体。
-  audio.defaultPlaybackRate = nextRate
-  audio.playbackRate = nextRate
-  syncPlaybackRate()
+  playbackRate.value = nextRate
+  if (mediaElement) {
+    mediaElement.defaultPlaybackRate = nextRate
+    mediaElement.playbackRate = nextRate
+    syncPlaybackRate()
+  }
 }
 
-audio.addEventListener('ratechange', syncPlaybackRate)
-let currentObjectUrl = ''
+const objectUrls = new Map()
+let loadedMediaId = ''
 let mediaRequestId = 0
+let cancelPendingMetadataWait = null
 let eventChannel
 const page = getCurrentInstance().proxy
 
 const syncPlayingState = () => {
-  isPlaying.value = !audio.paused && !audio.ended
+  isPlaying.value = !!mediaElement && !mediaElement.paused && !mediaElement.ended
 }
 
 const syncCurrentTime = () => {
-  currentTime.value = Number.isFinite(audio.currentTime) ? Math.max(0, audio.currentTime) : 0
+  currentTime.value = mediaElement && Number.isFinite(mediaElement.currentTime)
+    ? Math.max(0, mediaElement.currentTime)
+    : 0
 }
 
 const syncDuration = () => {
-  duration.value = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0
+  duration.value = mediaElement && Number.isFinite(mediaElement.duration) && mediaElement.duration > 0
+    ? mediaElement.duration
+    : 0
 }
 
 const formatTime = (seconds) => {
@@ -161,23 +194,21 @@ const previewSeek = (event) => {
 const seek = (event) => {
   seekPreview.value = null
   const progress = Number(event.detail.value)
-  if (!currentTrack.value || duration.value <= 0 || !Number.isFinite(progress)) return
+  if (!mediaElement || !currentTrack.value || isSwitchingMedia.value || duration.value <= 0 || !Number.isFinite(progress)) return
 
   try {
-    // 0～1000 的滑块位置换算成秒，只调整现有 Audio，不改变播放/暂停状态。
-    audio.currentTime = Math.min(1000, Math.max(0, progress)) / 1000 * duration.value
+    // 0～1000 的滑块位置换算成秒，只调整现有媒体，不改变播放/暂停状态。
+    mediaElement.currentTime = Math.min(1000, Math.max(0, progress)) / 1000 * duration.value
   } catch (error) {
     console.error('无法调整播放位置：', error)
   }
-  // 从 Audio 读回实际位置；后续 timeupdate / seeked 会继续同步。
+  // 从媒体元素读回实际位置；后续 timeupdate / seeked 会继续同步。
   syncCurrentTime()
 }
 
-audio.addEventListener('play', syncPlayingState)
-audio.addEventListener('pause', syncPlayingState)
 const handleEnded = () => {
   // 忽略切歌后可能到达的旧结束事件。
-  if (!audio.ended) return
+  if (!mediaElement?.ended) return
   syncPlayingState()
   if (playMode.value === 'single') {
     restartTrack()
@@ -186,75 +217,215 @@ const handleEnded = () => {
   }
 }
 
-audio.addEventListener('ended', handleEnded)
-audio.addEventListener('loadedmetadata', syncDuration)
-audio.addEventListener('durationchange', syncDuration)
-audio.addEventListener('timeupdate', syncCurrentTime)
-audio.addEventListener('seeked', syncCurrentTime)
+const beginMediaRequest = () => {
+  mediaRequestId += 1
+  cancelPendingMetadataWait?.()
+  cancelPendingMetadataWait = null
+  return mediaRequestId
+}
+
+const releaseObjectUrls = () => {
+  for (const objectUrl of objectUrls.values()) URL.revokeObjectURL(objectUrl)
+  objectUrls.clear()
+}
 
 const clearMedia = () => {
   // 切歌和卸载都使之前未完成的数据库读取失效。
-  mediaRequestId += 1
-  audio.pause()
-  audio.removeAttribute('src')
-  audio.load()
-  if (currentObjectUrl) {
-    URL.revokeObjectURL(currentObjectUrl)
-    currentObjectUrl = ''
+  beginMediaRequest()
+  if (mediaElement) {
+    mediaElement.pause()
+    mediaElement.removeAttribute('src')
+    mediaElement.load()
   }
+  releaseObjectUrls()
+  loadedMediaId = ''
   currentIndex.value = -1
+  mediaMode.value = 'audio'
+  isSwitchingMedia.value = false
   isPlaying.value = false
   currentTime.value = 0
   duration.value = 0
   seekPreview.value = null
 }
 
-const resumePlayback = async () => {
-  if (!currentTrack.value || !currentObjectUrl) return
+const getObjectUrl = async (mediaId, requestId) => {
+  if (objectUrls.has(mediaId)) return objectUrls.get(mediaId)
+  const storedMedia = await getMedia(mediaId)
+  if (requestId !== mediaRequestId) return null
+  const objectUrl = URL.createObjectURL(storedMedia.blob)
+  objectUrls.set(mediaId, objectUrl)
+  return objectUrl
+}
+
+const waitForMetadata = (objectUrl, requestId) => new Promise((resolve, reject) => {
+  let settled = false
+  let cancel
+  const cleanup = () => {
+    mediaElement?.removeEventListener('loadedmetadata', handleLoadedMetadata)
+    mediaElement?.removeEventListener('error', handleError)
+    if (cancelPendingMetadataWait === cancel) cancelPendingMetadataWait = null
+  }
+  const finish = (callback, value) => {
+    if (settled) return
+    settled = true
+    cleanup()
+    callback(value)
+  }
+  const handleLoadedMetadata = () => {
+    if (requestId !== mediaRequestId) {
+      finish(resolve, false)
+      return
+    }
+    finish(resolve, true)
+  }
+  const handleError = () => {
+    const code = mediaElement?.error?.code ?? '未知'
+    finish(reject, new Error(`浏览器无法加载媒体（错误码 ${code}）`))
+  }
+  cancel = () => finish(resolve, false)
+  cancelPendingMetadataWait?.()
+  cancelPendingMetadataWait = cancel
+  mediaElement.addEventListener('loadedmetadata', handleLoadedMetadata)
+  mediaElement.addEventListener('error', handleError)
+  mediaElement.src = objectUrl
+  mediaElement.load()
+  if (mediaElement.readyState >= 1) queueMicrotask(handleLoadedMetadata)
+})
+
+const setMediaSource = async (mediaId, objectUrl, requestId) => {
+  if (!mediaElement || requestId !== mediaRequestId) return false
+  const loaded = await waitForMetadata(objectUrl, requestId)
+  if (!loaded || requestId !== mediaRequestId) return false
+  loadedMediaId = mediaId
+  syncDuration()
+  syncCurrentTime()
+  return true
+}
+
+const resumePlayback = async (requestId = mediaRequestId) => {
+  if (!mediaElement || !currentTrack.value || !loadedMediaId || requestId !== mediaRequestId) return
   const title = currentTrack.value.title
-  const playingUrl = currentObjectUrl
+  const playingMediaId = loadedMediaId
   try {
-    await audio.play()
+    await mediaElement.play()
   } catch (error) {
-    // 快速切歌或离开页面会中断旧请求，不让旧请求影响新媒体。
-    if (playingUrl !== currentObjectUrl) return
+    // 快速切歌、切换模式或离开页面会中断旧请求，不让旧请求影响新媒体。
+    if (requestId !== mediaRequestId || playingMediaId !== loadedMediaId) return
     syncPlayingState()
     console.error(`无法播放 Track「${title}」：`, error)
   }
 }
 
+const restoreMediaState = async ({ time, wasPlaying, rate }, requestId) => {
+  if (!mediaElement || requestId !== mediaRequestId) return false
+  const restoredRate = Number.isFinite(rate) && rate > 0 ? rate : 1
+  mediaElement.defaultPlaybackRate = restoredRate
+  mediaElement.playbackRate = restoredRate
+  const maximumTime = Number.isFinite(mediaElement.duration) && mediaElement.duration > 0
+    ? mediaElement.duration
+    : Math.max(0, time)
+  try {
+    mediaElement.currentTime = Math.min(Math.max(0, time), maximumTime)
+  } catch (error) {
+    console.error('无法恢复媒体播放位置：', error)
+  }
+  syncPlaybackRate()
+  syncDuration()
+  syncCurrentTime()
+  if (wasPlaying) await resumePlayback(requestId)
+  else syncPlayingState()
+  return requestId === mediaRequestId
+}
+
 const playAtIndex = async (index) => {
-  if (!Number.isInteger(index) || index < 0 || index >= tracks.value.length) return
+  if (!mediaElement || !Number.isInteger(index) || index < 0 || index >= tracks.value.length) return
   const track = tracks.value[index]
+  const rate = playbackRate.value
   clearMedia()
   const requestId = mediaRequestId
   // 先记录选中的索引，快速连续切歌仍能从最新选择继续。
   currentIndex.value = index
+  mediaMode.value = 'audio'
+  isSwitchingMedia.value = true
   try {
     // V0.2 Track 默认播放提取音频；旧 Track 或提取失败时继续播放原视频音轨。
-    const media = await getMedia(track.audioMediaId || track.mediaId)
-    if (requestId !== mediaRequestId) return
-    currentObjectUrl = URL.createObjectURL(media.blob)
-    audio.src = currentObjectUrl
+    const mediaId = track.audioMediaId || track.mediaId
+    const objectUrl = await getObjectUrl(mediaId, requestId)
+    if (!objectUrl || requestId !== mediaRequestId) return
+    const loaded = await setMediaSource(mediaId, objectUrl, requestId)
+    if (!loaded) return
+    await restoreMediaState({ time: 0, wasPlaying: true, rate }, requestId)
   } catch (error) {
     if (requestId !== mediaRequestId) return
     clearMedia()
     currentIndex.value = index
+    mediaMode.value = 'audio'
     // 保留选中项，允许用户继续切换到其他 Track。
     console.error(`无法加载 Track「${track.title}」：`, error)
-    return
+  } finally {
+    if (requestId === mediaRequestId) isSwitchingMedia.value = false
   }
-  resumePlayback()
 }
 
-// 重播同一首时保留 Audio 和 Object URL，只把播放位置归零。
+const toggleMediaMode = async () => {
+  if (!mediaElement || !currentTrack.value || isSwitchingMedia.value || !loadedMediaId) return
+  const track = currentTrack.value
+  const previousMode = mediaMode.value
+  const targetMode = previousMode === 'audio' ? 'video' : 'audio'
+  const previousMediaId = loadedMediaId
+  const targetMediaId = targetMode === 'video' ? track.mediaId : (track.audioMediaId || track.mediaId)
+  const savedState = {
+    time: Number.isFinite(mediaElement.currentTime) ? mediaElement.currentTime : currentTime.value,
+    wasPlaying: !mediaElement.paused && !mediaElement.ended,
+    rate: mediaElement.playbackRate
+  }
+  const requestId = beginMediaRequest()
+
+  // 旧 Track 和提取失败 Track 的两种模式都使用原视频，只切换画面显示。
+  if (targetMediaId === previousMediaId) {
+    mediaMode.value = targetMode
+    return
+  }
+
+  const previousObjectUrl = objectUrls.get(previousMediaId)
+  let sourceChanged = false
+  mediaMode.value = targetMode
+  isSwitchingMedia.value = true
+  mediaElement.pause()
+  try {
+    const targetObjectUrl = await getObjectUrl(targetMediaId, requestId)
+    if (!targetObjectUrl || requestId !== mediaRequestId) return
+    sourceChanged = true
+    const loaded = await setMediaSource(targetMediaId, targetObjectUrl, requestId)
+    if (!loaded) return
+    await restoreMediaState(savedState, requestId)
+  } catch (error) {
+    if (requestId !== mediaRequestId) return
+    console.error(`无法切换到${targetMode === 'video' ? '视频' : '音频'}模式：`, error)
+    mediaMode.value = previousMode
+    try {
+      if (sourceChanged && previousObjectUrl) {
+        const restored = await setMediaSource(previousMediaId, previousObjectUrl, requestId)
+        if (restored) await restoreMediaState(savedState, requestId)
+      } else if (savedState.wasPlaying) {
+        await resumePlayback(requestId)
+      }
+    } catch (restoreError) {
+      if (requestId === mediaRequestId) console.error('恢复原播放媒体失败：', restoreError)
+    }
+  } finally {
+    if (requestId === mediaRequestId) isSwitchingMedia.value = false
+  }
+}
+
+// 重播同一首时保留媒体元素和 Object URL，只把播放位置归零。
 const restartTrack = () => {
-  if (!currentTrack.value) return
-  if (!currentObjectUrl) {
+  if (!mediaElement || !currentTrack.value) return
+  if (!loadedMediaId) {
     playAtIndex(currentIndex.value)
     return
   }
-  audio.currentTime = 0
+  mediaElement.currentTime = 0
   seekPreview.value = null
   syncCurrentTime()
   resumePlayback()
@@ -291,19 +462,60 @@ const openQueue = (data) => {
 }
 
 const togglePlayback = () => {
-  if (!currentTrack.value) return
-  if (!currentObjectUrl) {
+  if (!mediaElement || !currentTrack.value || isSwitchingMedia.value) return
+  if (!loadedMediaId) {
     playAtIndex(currentIndex.value)
     return
   }
-  if (audio.paused || audio.ended) {
+  if (mediaElement.paused || mediaElement.ended) {
     resumePlayback()
   } else {
-    audio.pause()
+    mediaElement.pause()
   }
 }
 
+const resolveNativeMediaElement = () => {
+  const candidate = mediaElementRef.value
+  if (typeof HTMLVideoElement !== 'undefined' && candidate instanceof HTMLVideoElement) return candidate
+  const element = candidate?.$el ?? candidate
+  if (typeof HTMLVideoElement !== 'undefined' && element instanceof HTMLVideoElement) return element
+  return element?.querySelector?.('video') ?? null
+}
+
+const addMediaEventListeners = () => {
+  mediaElement.addEventListener('play', syncPlayingState)
+  mediaElement.addEventListener('pause', syncPlayingState)
+  mediaElement.addEventListener('ended', handleEnded)
+  mediaElement.addEventListener('loadedmetadata', syncDuration)
+  mediaElement.addEventListener('durationchange', syncDuration)
+  mediaElement.addEventListener('timeupdate', syncCurrentTime)
+  mediaElement.addEventListener('seeked', syncCurrentTime)
+  mediaElement.addEventListener('ratechange', syncPlaybackRate)
+}
+
+const removeMediaEventListeners = () => {
+  if (!mediaElement) return
+  mediaElement.removeEventListener('play', syncPlayingState)
+  mediaElement.removeEventListener('pause', syncPlayingState)
+  mediaElement.removeEventListener('ended', handleEnded)
+  mediaElement.removeEventListener('loadedmetadata', syncDuration)
+  mediaElement.removeEventListener('durationchange', syncDuration)
+  mediaElement.removeEventListener('timeupdate', syncCurrentTime)
+  mediaElement.removeEventListener('seeked', syncCurrentTime)
+  mediaElement.removeEventListener('ratechange', syncPlaybackRate)
+}
+
 onMounted(() => {
+  mediaElement = resolveNativeMediaElement()
+  if (!mediaElement) {
+    console.error('无法获取原生 HTMLVideoElement，播放器无法初始化。')
+    return
+  }
+  mediaElement.playsInline = true
+  mediaElement.setAttribute('playsinline', '')
+  mediaElement.setAttribute('webkit-playsinline', '')
+  mediaElement.defaultPlaybackRate = playbackRate.value
+  addMediaEventListeners()
   // 页面通信只接收元数据，媒体由 playAtIndex 按需读取。
   eventChannel = page.getOpenerEventChannel()
   eventChannel.on('openQueue', openQueue)
@@ -313,14 +525,8 @@ onUnload(() => {
   eventChannel?.off('openQueue', openQueue)
   clearMedia()
   tracks.value = []
-  audio.removeEventListener('play', syncPlayingState)
-  audio.removeEventListener('pause', syncPlayingState)
-  audio.removeEventListener('ended', handleEnded)
-  audio.removeEventListener('loadedmetadata', syncDuration)
-  audio.removeEventListener('durationchange', syncDuration)
-  audio.removeEventListener('timeupdate', syncCurrentTime)
-  audio.removeEventListener('seeked', syncCurrentTime)
-  audio.removeEventListener('ratechange', syncPlaybackRate)
+  removeMediaEventListeners()
+  mediaElement = null
 })
 </script>
 
@@ -333,13 +539,34 @@ onUnload(() => {
   flex-direction: column;
 }
 
+.media-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .track-title {
   flex: 1;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+.video-element {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  background: #000;
+  object-fit: contain;
+}
+
+.media-mode-button {
+  margin: 16px auto 0;
 }
 
 .player-controls {
